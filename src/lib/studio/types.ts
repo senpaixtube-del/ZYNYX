@@ -33,7 +33,7 @@ export type ModifierType =
   | "displace";
 export type Shading = "wire" | "solid" | "material" | "rendered";
 export type TransformMode = "translate" | "rotate" | "scale";
-export type SculptBrush = "draw" | "smooth" | "inflate" | "grab";
+export type SculptBrush = "draw" | "smooth" | "inflate" | "grab" | "clay" | "pinch" | "flatten" | "crease" | "scrape";
 export type Lang = "fa" | "en";
 export type LayoutId = "model" | "lookdev" | "anim" | "script" | "render";
 export type EnvPreset =
@@ -66,6 +66,7 @@ export interface Material {
   sheen: number;
   wireframe: boolean;
   flat: boolean;
+  mapUrl?: string;
 }
 
 export interface Modifier {
@@ -116,6 +117,7 @@ export interface StudioObject {
   modifiers: Modifier[];
   keyframes: Keyframe[];
   baked?: BakedGeom;
+  parentId?: string;
 }
 
 export const ENV_PRESETS: EnvPreset[] = [

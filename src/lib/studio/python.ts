@@ -19,6 +19,7 @@ const KW = new Set([
   "for",
   "while",
   "def",
+  "class",
   "return",
   "pass",
   "in",
@@ -34,6 +35,15 @@ const KW = new Set([
   "break",
   "continue",
   "lambda",
+  "try",
+  "except",
+  "finally",
+  "raise",
+  "is",
+  "with",
+  "yield",
+  "global",
+  "nonlocal",
 ]);
 
 function tokenize(src: string): Tok[] {
@@ -123,12 +133,16 @@ type Expr =
   | { k: "list"; xs: Expr[] }
   | { k: "tuple"; xs: Expr[] }
   | { k: "dict"; xs: [Expr, Expr][] }
+  | { k: "listcomp"; elt: Expr; name: string; iter: Expr; cond?: Expr }
+  | { k: "dictcomp"; key: Expr; val: Expr; name: string; iter: Expr; cond?: Expr }
   | { k: "unary"; op: string; x: Expr }
   | { k: "bin"; op: string; a: Expr; b: Expr }
   | { k: "attr"; x: Expr; name: string }
   | { k: "idx"; x: Expr; i: Expr }
+  | { k: "slice"; x: Expr; a: Expr | null; b: Expr | null; c: Expr | null }
   | { k: "call"; x: Expr; args: Expr[]; kw: [string, Expr][] }
-  | { k: "ifexp"; t: Expr; a: Expr; b: Expr };
+  | { k: "ifexp"; t: Expr; a: Expr; b: Expr }
+  | { k: "lambda"; params: { name: string; def?: Expr }[]; body: Expr };
 
 type Stmt =
   | { k: "assign"; target: Expr; value: Expr; op?: string }
@@ -137,26 +151,30 @@ type Stmt =
   | { k: "pass" }
   | { k: "break" }
   | { k: "continue" }
+  | { k: "raise"; x: Expr | null }
   | { k: "if"; arms: { test: Expr; body: Stmt[] }[]; els: Stmt[] }
   | { k: "for"; name: string; iter: Expr; body: Stmt[] }
   | { k: "while"; test: Expr; body: Stmt[] }
   | { k: "def"; name: string; params: { name: string; def?: Expr }[]; body: Stmt[] }
+  | { k: "class"; name: string; bases: Expr[]; body: Stmt[] }
+  | { k: "try"; body: Stmt[]; handlers: { type: Expr | null; name?: string; body: Stmt[] }[]; fin: Stmt[] }
   | { k: "import"; name: string; as?: string }
   | { k: "from"; mod: string; names: string[] | "*" };
 
 class Parser {
   i = 0;
-  constructor(public toks: Tok[]) {}
+  toks: Tok[];
+  constructor(toks: Tok[]) {
+    this.toks = toks;
+  }
   cur(): Tok {
     return this.toks[this.i] ?? { t: "eof" };
   }
   eat(t?: Tok["t"], v?: string): Tok {
     const c = this.cur();
     if (t && c.t !== t) throw new SyntaxError(`expected ${t}, got ${c.t}`);
-    if (v && (c.t !== "op" && c.t !== "name" ? true : (c as { v: string }).v !== v)) {
-      if (c.t === "op" || c.t === "name") {
-        if ((c as { v: string }).v !== v) throw new SyntaxError(`expected ${v}`);
-      }
+    if (v && (c.t === "op" || c.t === "name") && (c as { v: string }).v !== v) {
+      throw new SyntaxError(`expected ${v}`);
     }
     this.i++;
     return c;
@@ -186,6 +204,13 @@ class Parser {
     if (this.isName("for")) return this.forStmt();
     if (this.isName("while")) return this.whileStmt();
     if (this.isName("def")) return this.defStmt();
+    if (this.isName("class")) return this.classStmt();
+    if (this.isName("try")) return this.tryStmt();
+    if (this.isName("raise")) {
+      this.eat("name");
+      if (this.cur().t === "nl" || this.cur().t === "dedent" || this.isOp(";")) return { k: "raise", x: null };
+      return { k: "raise", x: this.expr() };
+    }
     if (this.isName("return")) {
       this.eat("name");
       if (this.cur().t === "nl" || this.cur().t === "dedent" || this.isOp(";")) return { k: "return", x: null };
@@ -215,7 +240,12 @@ class Parser {
     }
     if (this.isName("from")) {
       this.eat("name");
-      const mod = (this.eat("name") as { v: string }).v;
+      const parts = [(this.eat("name") as { v: string }).v];
+      while (this.isOp(".")) {
+        this.eat("op");
+        parts.push((this.eat("name") as { v: string }).v);
+      }
+      const mod = parts.join(".");
       if (!this.isName("import")) throw new SyntaxError("from ... import");
       this.eat("name");
       if (this.isOp("*")) {
@@ -230,14 +260,39 @@ class Parser {
       return { k: "from", mod, names };
     }
     const x = this.expr();
+    if (this.isOp(",")) {
+      const xs = [x];
+      while (this.isOp(",")) {
+        this.eat("op");
+        if (this.isOp("=") || this.cur().t === "nl" || this.cur().t === "dedent") break;
+        xs.push(this.expr());
+      }
+      const target: Expr = { k: "tuple", xs };
+      if (this.isOp("=") || this.isOp("+=") || this.isOp("-=") || this.isOp("*=") || this.isOp("/=")) {
+        const op = (this.eat("op") as { v: string }).v;
+        return { k: "assign", target, value: this.tupleOrExpr(), op: op === "=" ? undefined : op[0] };
+      }
+      return { k: "expr", x: target };
+    }
     const c = this.cur();
     if (c.t === "op" && ["=", "+=", "-=", "*=", "/="].includes(c.v)) {
       const op = c.v;
       this.eat("op");
-      const value = this.expr();
+      const value = this.tupleOrExpr();
       return { k: "assign", target: x, value, op: op === "=" ? undefined : op[0] };
     }
     return { k: "expr", x };
+  }
+  tupleOrExpr(): Expr {
+    const first = this.expr();
+    if (!this.isOp(",")) return first;
+    const xs = [first];
+    while (this.isOp(",")) {
+      this.eat("op");
+      if (this.cur().t === "nl" || this.cur().t === "dedent" || this.cur().t === "eof") break;
+      xs.push(this.expr());
+    }
+    return { k: "tuple", xs };
   }
   suite(): Stmt[] {
     if (this.isOp(":")) this.eat("op");
@@ -292,6 +347,53 @@ class Parser {
     this.eat("name");
     const name = (this.eat("name") as { v: string }).v;
     this.eat("op", "(");
+    const params = this.paramList();
+    this.eat("op", ")");
+    return { k: "def", name, params, body: this.suite() };
+  }
+  classStmt(): Stmt {
+    this.eat("name");
+    const name = (this.eat("name") as { v: string }).v;
+    const bases: Expr[] = [];
+    if (this.isOp("(")) {
+      this.eat("op");
+      while (!this.isOp(")")) {
+        bases.push(this.expr());
+        if (this.isOp(",")) this.eat("op");
+        else break;
+      }
+      this.eat("op", ")");
+    }
+    return { k: "class", name, bases, body: this.suite() };
+  }
+  tryStmt(): Stmt {
+    this.eat("name");
+    const body = this.suite();
+    this.skipNl();
+    const handlers: { type: Expr | null; name?: string; body: Stmt[] }[] = [];
+    while (this.isName("except")) {
+      this.eat("name");
+      let type: Expr | null = null;
+      let name: string | undefined;
+      if (!this.isOp(":")) {
+        type = this.expr();
+        if (this.isName("as")) {
+          this.eat("name");
+          name = (this.eat("name") as { v: string }).v;
+        }
+      }
+      handlers.push({ type, name, body: this.suite() });
+      this.skipNl();
+    }
+    let fin: Stmt[] = [];
+    if (this.isName("finally")) {
+      this.eat("name");
+      fin = this.suite();
+    }
+    if (!handlers.length && !fin.length) throw new SyntaxError("try without except/finally");
+    return { k: "try", body, handlers, fin };
+  }
+  paramList(): { name: string; def?: Expr }[] {
     const params: { name: string; def?: Expr }[] = [];
     while (!this.isOp(")")) {
       const n = (this.eat("name") as { v: string }).v;
@@ -304,11 +406,37 @@ class Parser {
       if (this.isOp(",")) this.eat("op");
       else break;
     }
-    this.eat("op", ")");
-    return { k: "def", name, params, body: this.suite() };
+    return params;
   }
   expr(): Expr {
-    return this.orx();
+    if (this.isName("lambda")) return this.lambdaExpr();
+    const a = this.orx();
+    if (this.isName("if")) {
+      this.eat("name");
+      const t = this.orx();
+      if (!this.isName("else")) throw new SyntaxError("expected else in ternary");
+      this.eat("name");
+      const b = this.expr();
+      return { k: "ifexp", t, a, b };
+    }
+    return a;
+  }
+  lambdaExpr(): Expr {
+    this.eat("name");
+    const params: { name: string; def?: Expr }[] = [];
+    while (!this.isOp(":")) {
+      const n = (this.eat("name") as { v: string }).v;
+      let d: Expr | undefined;
+      if (this.isOp("=")) {
+        this.eat("op");
+        d = this.expr();
+      }
+      params.push({ name: n, def: d });
+      if (this.isOp(",")) this.eat("op");
+      else break;
+    }
+    this.eat("op", ":");
+    return { k: "lambda", params, body: this.expr() };
   }
   orx(): Expr {
     let a = this.andx();
@@ -409,9 +537,22 @@ class Parser {
       }
       if (this.isOp("[")) {
         this.eat("op");
-        const i = this.expr();
+        let a: Expr | null = null;
+        let b: Expr | null = null;
+        let c: Expr | null = null;
+        let isSlice = false;
+        if (!this.isOp(":") && !this.isOp("]")) a = this.expr();
+        if (this.isOp(":")) {
+          isSlice = true;
+          this.eat("op");
+          if (!this.isOp(":") && !this.isOp("]")) b = this.expr();
+          if (this.isOp(":")) {
+            this.eat("op");
+            if (!this.isOp("]")) c = this.expr();
+          }
+        }
         this.eat("op", "]");
-        x = { k: "idx", x, i };
+        x = isSlice ? { k: "slice", x, a, b, c } : { k: "idx", x, i: a! };
         continue;
       }
       if (this.isOp("(")) {
@@ -437,6 +578,20 @@ class Parser {
     }
     return x;
   }
+  compTail(): { name: string; iter: Expr; cond?: Expr } | null {
+    if (!this.isName("for")) return null;
+    this.eat("name");
+    const name = (this.eat("name") as { v: string }).v;
+    if (!this.isName("in")) throw new SyntaxError("comprehension for x in");
+    this.eat("name");
+    const iter = this.orx();
+    let cond: Expr | undefined;
+    if (this.isName("if")) {
+      this.eat("name");
+      cond = this.orx();
+    }
+    return { name, iter, cond };
+  }
   atom(): Expr {
     const c = this.cur();
     if (c.t === "num") {
@@ -445,36 +600,57 @@ class Parser {
     }
     if (c.t === "str") {
       this.eat("str");
-      return { k: "str", v: c.v };
+      let v = c.v;
+      while (this.cur().t === "str") v += (this.eat("str") as { v: string }).v;
+      return { k: "str", v };
     }
     if (c.t === "name") {
       this.eat("name");
-      if (c.v === "True") return { k: "name", v: "True" };
-      if (c.v === "False") return { k: "name", v: "False" };
-      if (c.v === "None") return { k: "name", v: "None" };
       return { k: "name", v: c.v };
     }
     if (this.isOp("[")) {
       this.eat("op");
-      const xs: Expr[] = [];
-      while (!this.isOp("]")) {
+      if (this.isOp("]")) {
+        this.eat("op");
+        return { k: "list", xs: [] };
+      }
+      const first = this.expr();
+      const tail = this.compTail();
+      if (tail) {
+        this.eat("op", "]");
+        return { k: "listcomp", elt: first, ...tail };
+      }
+      const xs = [first];
+      while (this.isOp(",")) {
+        this.eat("op");
+        if (this.isOp("]")) break;
         xs.push(this.expr());
-        if (this.isOp(",")) this.eat("op");
-        else break;
       }
       this.eat("op", "]");
       return { k: "list", xs };
     }
     if (this.isOp("{")) {
       this.eat("op");
-      const xs: [Expr, Expr][] = [];
-      while (!this.isOp("}")) {
-        const k = this.expr();
+      if (this.isOp("}")) {
+        this.eat("op");
+        return { k: "dict", xs: [] };
+      }
+      const k = this.expr();
+      this.eat("op", ":");
+      const v = this.expr();
+      const tail = this.compTail();
+      if (tail) {
+        this.eat("op", "}");
+        return { k: "dictcomp", key: k, val: v, ...tail };
+      }
+      const xs: [Expr, Expr][] = [[k, v]];
+      while (this.isOp(",")) {
+        this.eat("op");
+        if (this.isOp("}")) break;
+        const kk = this.expr();
         this.eat("op", ":");
-        const v = this.expr();
-        xs.push([k, v]);
-        if (this.isOp(",")) this.eat("op");
-        else break;
+        const vv = this.expr();
+        xs.push([kk, vv]);
       }
       this.eat("op", "}");
       return { k: "dict", xs };
@@ -504,15 +680,27 @@ class Parser {
 }
 
 class ReturnSignal {
-  constructor(public value: PyVal) {}
+  value: PyVal;
+  constructor(value: PyVal) {
+    this.value = value;
+  }
 }
 class BreakSignal {}
 class ContinueSignal {}
+class PyException {
+  value: PyVal;
+  constructor(value: PyVal) {
+    this.value = value;
+  }
+}
 
 function truthy(v: PyVal): boolean {
   if (v == null || v === false) return false;
   if (v === 0 || v === "") return false;
   if (Array.isArray(v) && v.length === 0) return false;
+  if (v && typeof v === "object" && (v as { __len__?: () => number }).__len__) {
+    return (v as { __len__: () => number }).__len__() !== 0;
+  }
   return true;
 }
 
@@ -521,6 +709,103 @@ function pyEq(a: PyVal, b: PyVal): boolean {
     return a.length === b.length && a.every((x, i) => pyEq(x, b[i]));
   }
   return a === b;
+}
+
+function markPyFn<T extends Function>(fn: T): T {
+  (fn as { __pyfn?: boolean }).__pyfn = true;
+  return fn;
+}
+
+function iterate(it: PyVal): PyVal[] {
+  if (Array.isArray(it)) return it;
+  if (typeof it === "string") return [...it];
+  if (it && typeof it === "object" && typeof (it as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function") {
+    return [...(it as Iterable<PyVal>)];
+  }
+  return [];
+}
+
+function pySlice(o: PyVal, start: PyVal, end: PyVal, step: PyVal): PyVal {
+  const seq = typeof o === "string" ? [...o] : Array.isArray(o) ? o : null;
+  if (!seq) return [];
+  const n = seq.length;
+  let st = start == null ? null : Number(start);
+  let en = end == null ? null : Number(end);
+  const sp = step == null ? 1 : Number(step) || 1;
+  if (st == null) st = sp > 0 ? 0 : n - 1;
+  if (en == null) en = sp > 0 ? n : -n - 1;
+  if (st < 0) st += n;
+  if (en < 0) en += n;
+  const out: PyVal[] = [];
+  if (sp > 0) {
+    for (let i = st; i < en && i < n; i += sp) if (i >= 0) out.push(seq[i]);
+  } else {
+    for (let i = st; i > en && i >= 0; i += sp) if (i < n) out.push(seq[i]);
+  }
+  return typeof o === "string" ? out.join("") : out;
+}
+
+function pyGet(o: PyVal, name: string): PyVal {
+  if (o == null) throw new Error(`AttributeError: None has no attribute ${name}`);
+  if (Array.isArray(o)) {
+    if (name === "append") return (x: PyVal) => {
+      o.push(x);
+      return null;
+    };
+    if (name === "pop") return (i?: number) => (i == null ? o.pop() : o.splice(Number(i), 1)[0]);
+    if (name === "extend") return (xs: PyVal) => {
+      o.push(...iterate(xs));
+      return null;
+    };
+    if (name === "insert")
+      return (i: number, x: PyVal) => {
+        o.splice(Number(i), 0, x);
+        return null;
+      };
+    if (name === "index") return (x: PyVal) => o.findIndex((v) => pyEq(v, x));
+    if (name === "count") return (x: PyVal) => o.filter((v) => pyEq(v, x)).length;
+    if (name === "reverse")
+      return () => {
+        o.reverse();
+        return null;
+      };
+    if (name === "sort")
+      return () => {
+        o.sort((a, b) => (a as number) - (b as number));
+        return null;
+      };
+    if (name === "copy") return () => [...o];
+  }
+  if (typeof o === "string") {
+    if (name === "upper") return () => o.toUpperCase();
+    if (name === "lower") return () => o.toLowerCase();
+    if (name === "split") return (sep?: string) => o.split(sep ?? " ");
+    if (name === "join") return (xs: PyVal) => iterate(xs).map(String).join(o);
+    if (name === "strip") return () => o.trim();
+    if (name === "replace") return (a: string, b: string) => o.split(String(a)).join(String(b));
+    if (name === "startswith") return (s: string) => o.startsWith(String(s));
+    if (name === "endswith") return (s: string) => o.endsWith(String(s));
+    if (name === "find") return (s: string) => o.indexOf(String(s));
+    if (name === "format")
+      return (...args: PyVal[]) => {
+        let i = 0;
+        return o.replace(/\{(\d*)\}/g, (_, n) => String(n === "" ? args[i++] : args[Number(n)]));
+      };
+  }
+  if (o && typeof o === "object") {
+    const rec = o as Record<string, PyVal>;
+    if (name in rec || Object.prototype.hasOwnProperty.call(rec, name)) {
+      const v = rec[name];
+      if (typeof v === "function") {
+        if ((v as { __pyfn?: boolean }).__pyfn) {
+          return (...args: PyVal[]) => (v as Function)(o, ...args);
+        }
+        return (v as Function).bind(o);
+      }
+      return v;
+    }
+  }
+  throw new Error(`AttributeError: object has no attribute '${name}'`);
 }
 
 export interface PyModules {
@@ -549,6 +834,7 @@ export function runPython(
         if (x.v === "False") return false;
         if (x.v === "None") return null;
         if (Object.prototype.hasOwnProperty.call(scope, x.v)) return scope[x.v];
+        if (x.v in scope) return scope[x.v];
         if (Object.prototype.hasOwnProperty.call(globals, x.v)) return globals[x.v];
         throw new Error(`NameError: name '${x.v}' is not defined`);
       case "list":
@@ -559,6 +845,43 @@ export function runPython(
         const d: Record<string, PyVal> = {};
         for (const [k, v] of x.xs) d[String(evalExpr(k, scope))] = evalExpr(v, scope);
         return d;
+      }
+      case "listcomp": {
+        const out: PyVal[] = [];
+        const local = Object.create(scope) as Record<string, PyVal>;
+        for (const item of iterate(evalExpr(x.iter, scope))) {
+          local[x.name] = item;
+          if (x.cond && !truthy(evalExpr(x.cond, local))) continue;
+          out.push(evalExpr(x.elt, local));
+        }
+        return out;
+      }
+      case "dictcomp": {
+        const d: Record<string, PyVal> = {};
+        const local = Object.create(scope) as Record<string, PyVal>;
+        for (const item of iterate(evalExpr(x.iter, scope))) {
+          local[x.name] = item;
+          if (x.cond && !truthy(evalExpr(x.cond, local))) continue;
+          d[String(evalExpr(x.key, local))] = evalExpr(x.val, local);
+        }
+        return d;
+      }
+      case "lambda": {
+        const capturing = scope;
+        return markPyFn((...args: PyVal[]) => {
+          const local: Record<string, PyVal> = Object.create(capturing);
+          const kw =
+            args.length && args[args.length - 1] && typeof args[args.length - 1] === "object" && (args[args.length - 1] as { __kw?: unknown }).__kw
+              ? (args.pop() as { __kw: Record<string, PyVal> }).__kw
+              : {};
+          x.params.forEach((p, i) => {
+            if (i < args.length) local[p.name] = args[i];
+            else if (p.name in kw) local[p.name] = kw[p.name];
+            else if (p.def) local[p.name] = evalExpr(p.def, capturing);
+            else local[p.name] = null;
+          });
+          return evalExpr(x.body, local);
+        });
       }
       case "unary": {
         const v = evalExpr(x.x, scope);
@@ -586,6 +909,7 @@ export function runPython(
             return (a as number) - (b as number);
           case "*":
             if (typeof a === "string") return a.repeat(Number(b));
+            if (typeof b === "string") return b.repeat(Number(a));
             if (Array.isArray(a)) return Array.from({ length: Number(b) }, () => a).flat();
             return (a as number) * (b as number);
           case "/":
@@ -624,23 +948,28 @@ export function runPython(
         }
         return null;
       }
-      case "attr": {
-        const o = evalExpr(x.x, scope) as Record<string, PyVal>;
-        if (o == null) throw new Error(`AttributeError: None has no attribute ${x.name}`);
-        const v = (o as { [k: string]: PyVal })[x.name];
-        if (typeof v === "function") return (v as Function).bind(o);
-        return v;
-      }
+      case "attr":
+        return pyGet(evalExpr(x.x, scope), x.name);
       case "idx": {
         const o = evalExpr(x.x, scope);
         const i = evalExpr(x.i, scope);
         if (o && typeof o === "object" && typeof (o as { __getitem__?: Function }).__getitem__ === "function") {
           return (o as { __getitem__: Function }).__getitem__(i);
         }
-        if (Array.isArray(o)) return o[Number(i)];
-        if (typeof o === "string") return o[Number(i)];
+        if (Array.isArray(o)) {
+          let n = Number(i);
+          if (n < 0) n += o.length;
+          return o[n];
+        }
+        if (typeof o === "string") {
+          let n = Number(i);
+          if (n < 0) n += o.length;
+          return o[n];
+        }
         return (o as Record<string, PyVal>)[String(i)];
       }
+      case "slice":
+        return pySlice(evalExpr(x.x, scope), x.a ? evalExpr(x.a, scope) : null, x.b ? evalExpr(x.b, scope) : null, x.c ? evalExpr(x.c, scope) : null);
       case "call": {
         const fn = evalExpr(x.x, scope);
         if (typeof fn !== "function") throw new Error(`TypeError: object is not callable`);
@@ -668,11 +997,17 @@ export function runPython(
       if (op === "/") return n / m;
       return value;
     };
+    if (target.k === "tuple" || target.k === "list") {
+      const arr = iterate(value);
+      target.xs.forEach((t, i) => assignTarget(t, arr[i], scope, op));
+      return;
+    }
     if (target.k === "name") {
       const cur = Object.prototype.hasOwnProperty.call(scope, target.v) ? scope[target.v] : globals[target.v];
       const next = applyOp(cur);
-      if (Object.prototype.hasOwnProperty.call(scope, target.v) || !(target.v in globals)) scope[target.v] = next;
-      else globals[target.v] = next;
+      if (Object.prototype.hasOwnProperty.call(scope, target.v) || !(target.v in globals) || scope === globals) {
+        scope[target.v] = next;
+      } else globals[target.v] = next;
       return;
     }
     if (target.k === "attr") {
@@ -691,6 +1026,31 @@ export function runPython(
       else (o as Record<string, PyVal>)[String(i)] = applyOp((o as Record<string, PyVal>)[String(i)]);
     }
   };
+
+  const makeFn = (
+    params: { name: string; def?: Expr }[],
+    body: Stmt[],
+    defining: Record<string, PyVal>,
+  ) =>
+    markPyFn((...args: PyVal[]) => {
+      const local: Record<string, PyVal> = Object.create(defining);
+      const kw =
+        args.length && args[args.length - 1] && typeof args[args.length - 1] === "object" && (args[args.length - 1] as { __kw?: unknown }).__kw
+          ? (args.pop() as { __kw: Record<string, PyVal> }).__kw
+          : {};
+      params.forEach((p, i) => {
+        if (i < args.length) local[p.name] = args[i];
+        else if (p.name in kw) local[p.name] = kw[p.name];
+        else if (p.def) local[p.name] = evalExpr(p.def, defining);
+        else local[p.name] = null;
+      });
+      try {
+        return runBlock(body, local);
+      } catch (e) {
+        if (e instanceof ReturnSignal) return e.value;
+        throw e;
+      }
+    });
 
   const runBlock = (body: Stmt[], scope: Record<string, PyVal>): PyVal => {
     let last: PyVal = null;
@@ -711,6 +1071,8 @@ export function runPython(
         throw new ContinueSignal();
       case "return":
         throw new ReturnSignal(st.x ? evalExpr(st.x, scope) : null);
+      case "raise":
+        throw new PyException(st.x ? evalExpr(st.x, scope) : "Exception");
       case "expr":
         return evalExpr(st.x, scope);
       case "assign":
@@ -723,12 +1085,7 @@ export function runPython(
         return runBlock(st.els, scope);
       }
       case "for": {
-        const it = evalExpr(st.iter, scope);
-        const arr = Array.isArray(it)
-          ? it
-          : it && typeof it === "object" && typeof (it as { [Symbol.iterator]?: unknown })[Symbol.iterator] === "function"
-            ? [...(it as Iterable<PyVal>)]
-            : [];
+        const arr = iterate(evalExpr(st.iter, scope));
         for (const item of arr) {
           scope[st.name] = item;
           try {
@@ -756,40 +1113,79 @@ export function runPython(
         return null;
       }
       case "def": {
-        const fn = (...args: PyVal[]) => {
-          const local: Record<string, PyVal> = Object.create(scope);
-          const kw =
-            args.length && args[args.length - 1] && typeof args[args.length - 1] === "object" && (args[args.length - 1] as { __kw?: unknown }).__kw
-              ? (args.pop() as { __kw: Record<string, PyVal> }).__kw
-              : {};
-          st.params.forEach((p, i) => {
-            if (i < args.length) local[p.name] = args[i];
-            else if (p.name in kw) local[p.name] = kw[p.name];
-            else if (p.def) local[p.name] = evalExpr(p.def, scope);
-            else local[p.name] = null;
-          });
-          try {
-            return runBlock(st.body, local);
-          } catch (e) {
-            if (e instanceof ReturnSignal) return e.value;
+        const fn = makeFn(st.params, st.body, scope);
+        scope[st.name] = fn;
+        if (scope === globals) globals[st.name] = fn;
+        return fn;
+      }
+      case "class": {
+        const proto: Record<string, PyVal> = Object.create(null);
+        const ns: Record<string, PyVal> = Object.create(scope);
+        runBlock(st.body, ns);
+        for (const k of Object.keys(ns)) proto[k] = ns[k];
+        const cls = markPyFn((...args: PyVal[]) => {
+          const inst = Object.create(proto) as Record<string, PyVal>;
+          inst.__class__ = cls;
+          const init = proto.__init__;
+          if (typeof init === "function") {
+            const kw =
+              args.length && args[args.length - 1] && typeof args[args.length - 1] === "object" && (args[args.length - 1] as { __kw?: unknown }).__kw
+                ? (args.pop() as { __kw: Record<string, PyVal> }).__kw
+                : {};
+            if ((init as { __pyfn?: boolean }).__pyfn) {
+              (init as Function)(inst, ...args, Object.keys(kw).length ? { __kw: kw } : undefined);
+            } else (init as Function)(...args);
+          }
+          return inst;
+        });
+        (cls as { __name__?: string }).__name__ = st.name;
+        Object.assign(cls, proto);
+        scope[st.name] = cls;
+        if (scope === globals) globals[st.name] = cls;
+        return cls;
+      }
+      case "try": {
+        let result: PyVal = null;
+        try {
+          result = runBlock(st.body, scope);
+        } catch (e) {
+          if (e instanceof ReturnSignal || e instanceof BreakSignal || e instanceof ContinueSignal) {
+            if (st.fin.length) runBlock(st.fin, scope);
             throw e;
           }
-        };
-        scope[st.name] = fn;
-        globals[st.name] = fn;
-        return fn;
+          const val = e instanceof PyException ? e.value : e instanceof Error ? e.message : e;
+          const h = st.handlers[0];
+          if (h?.name) scope[h.name] = val;
+          try {
+            result = h ? runBlock(h.body, scope) : null;
+          } catch (e2) {
+            if (st.fin.length) runBlock(st.fin, scope);
+            throw e2;
+          }
+        }
+        if (st.fin.length) runBlock(st.fin, scope);
+        return result;
       }
       case "import": {
         const mod = modules[st.name];
         if (!mod) throw new Error(`ImportError: no module named '${st.name}'`);
-        globals[st.as ?? st.name] = mod;
+        const bind = st.as ?? st.name;
+        scope[bind] = mod;
+        if (scope === globals) globals[bind] = mod;
         return mod;
       }
       case "from": {
-        const mod = modules[st.mod];
+        const mod = modules[st.mod] ?? modules[st.mod.split(".")[0]!];
         if (!mod) throw new Error(`ImportError: no module named '${st.mod}'`);
-        if (st.names === "*") Object.assign(globals, mod);
-        else for (const n of st.names) globals[n] = mod[n];
+        if (st.names === "*") {
+          Object.assign(scope, mod);
+          if (scope === globals) Object.assign(globals, mod);
+        } else {
+          for (const n of st.names) {
+            scope[n] = (mod as Record<string, PyVal>)[n];
+            if (scope === globals) globals[n] = (mod as Record<string, PyVal>)[n];
+          }
+        }
         return null;
       }
     }
@@ -798,9 +1194,11 @@ export function runPython(
   void KW;
   void print;
   try {
-    return runBlock(ast, globals);
+    const result = runBlock(ast, globals);
+    return result;
   } catch (e) {
     if (e instanceof ReturnSignal) return e.value;
+    if (e instanceof PyException) throw new Error(String(e.value));
     throw e;
   }
 }
