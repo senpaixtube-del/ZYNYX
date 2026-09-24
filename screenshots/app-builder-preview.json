@@ -1,0 +1,40 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Lumina",
+      "hasCanvas": false,
+      "bodyTextLen": 677,
+      "bodyTextHash": "70049569f8e0702c0d0defdacd6998d46f69d184301c9d131c5e485269784a91",
+      "bodyTextPrefix": "Lumina فایل ویرایش افزودن نور رندر راهنما مدل لوک‌دو انیم اسکریپ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Lumina",
+      "hasCanvas": false,
+      "bodyTextLen": 334,
+      "bodyTextHash": "9ce00a210398a710ff089845b9782400af2eeb77e8a53f3b731f59f399239219",
+      "bodyTextPrefix": "Lumina EN آبجکت سیم توپر متریال رندر رندر فریم استودیو… LUMINA ا",
+      "horizontalOverflow": false,
+      "consoleErrors": [
+        "In HTML, %s cannot be a descendant of <%s>.\nThis will cause a hydration error.%s <button> button \n\n  ...\n    <SafeFragment fallback={null}>\n      <CatchBoundary getResetKey={function getResetKey} errorComponent={function AppErrorComponent} ...>\n        <SafeFragment fallback={function fallback}>\n          <MatchInnerImpl match={{id:\"//\",ssr:true, ...}}>\n            <Lazy>\n              <Home>\n                <StudioApp>\n                  <div className=\"flex h-dvh...\">\n                    <Toaster>\n                    <header>\n                    <div>\n                    <div className=\"flex min-h...\">\n                      <aside className=\"w-[220px] ...\">\n                        <div className=\"flex h-1/2...\">\n                          <Outliner>\n                            <div className=\"flex h-ful...\">\n                              <div>\n                              <ul className=\"dcc-scroll...\">\n                                <li>\n>                                 <button\n>                                   type=\"button\"\n>                                   onClick={function onClick}\n>                                   className=\"flex w-full items-center gap-2 px-3 py-1.5 text-start text-xs text-mute...\"\n>                                 >\n                                    <Cylinder>\n                                    <span>\n>                                   <button\n>                                     type=\"button\"\n>                                     className=\"text-subtle hover:text-fg\"\n>                                     onClick={function onClick}\n>                                     aria-label=\"نمایان\"\n>                                   >\n                                ...\n                        ...\n                      ...\n                    ...\n"
+      ],
+      "pageErrors": [
+        "Hydration failed because the server rendered HTML didn't match the client. As a result this tree will be regenerated on the client. This can happen if a SSR-ed Client Component used:\n\n- A server/client branch `if (typeof window !== 'undefined')`.\n- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.\n- Date formatting in a user's locale which doesn't match the server.\n- External changing data without sending a snapshot of it along with the HTML.\n- Invalid HTML tag nesting.\n\nIt can also happen if the client has a browser extension installed which messes with the HTML before React loaded.\n\nhttps://react.dev/link/hydration-mismatch"
+      ],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
