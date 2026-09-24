@@ -3,6 +3,7 @@ import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js"
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { noise3 } from "./noise";
 import { applyBevelMesh, applyDisplaceTextured, applySolidifyShell, loopSubdivide } from "./modifiers";
+import type { Primitive, StudioObject, Triple } from "./types";
 
 export { noise3 };
 
@@ -323,36 +324,6 @@ export function primitiveGeometry(type: Primitive, params: Record<string, number
   }
 }
 
-function applyDisplace(geo: THREE.BufferGeometry, amount: number, scale: number) {
-  const pos = geo.getAttribute("position");
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const n = noise3(v.x * scale, v.y * scale, v.z * scale) * 2 - 1;
-    const nor = v.clone().normalize();
-    v.addScaledVector(nor, n * amount);
-    pos.setXYZ(i, v.x, v.y, v.z);
-  }
-  pos.needsUpdate = true;
-  geo.computeVertexNormals();
-}
-
-function applySolidify(geo: THREE.BufferGeometry, thickness: number) {
-  const pos = geo.getAttribute("position");
-  const nrm = geo.getAttribute("normal");
-  if (!nrm) geo.computeVertexNormals();
-  const nn = geo.getAttribute("normal");
-  for (let i = 0; i < pos.count; i++) {
-    pos.setXYZ(
-      i,
-      pos.getX(i) + nn.getX(i) * thickness,
-      pos.getY(i) + nn.getY(i) * thickness,
-      pos.getZ(i) + nn.getZ(i) * thickness,
-    );
-  }
-  pos.needsUpdate = true;
-}
-
 function applyMirror(geo: THREE.BufferGeometry, axis: number) {
   const other = geo.clone();
   const s: Triple = [1, 1, 1];
@@ -370,7 +341,42 @@ function applyArray(geo: THREE.BufferGeometry, count: number, offset: Triple) {
   return merge(parts);
 }
 
-function applyArray(geo: THREE.BufferGeometry, count: number, offset: Triple) {
+export function evaluateGeometry(obj: StudioObject): THREE.BufferGeometry {
+  if (obj.kind !== "mesh") return new THREE.BufferGeometry();
+  let geo =
+    obj.primitive === "baked" || obj.baked
+      ? bakedGeo(obj)
+      : primitiveGeometry(obj.primitive, obj.params, obj);
+
+  for (const mod of obj.modifiers) {
+    if (!mod.enabled) continue;
+    if (mod.type === "subdiv") {
+      const next = loopSubdivide(geo, mod.params.levels ?? 1);
+      if (next !== geo) {
+        if (geo !== undefined) {
+          /* previous geo may be replaced */
+        }
+        geo = next;
+      }
+    } else if (mod.type === "displace") {
+      applyDisplaceTextured(geo, mod.params.amount ?? 0.15, mod.params.scale ?? 2.2, mod.params.texture ?? 0);
+    } else if (mod.type === "solidify") {
+      geo = applySolidifyShell(geo, mod.params.thickness ?? 0.06);
+    } else if (mod.type === "mirror") {
+      geo = applyMirror(geo, Math.max(0, Math.min(2, Math.floor(mod.params.axis ?? 0))));
+    } else if (mod.type === "array") {
+      geo = applyArray(geo, mod.params.count ?? 3, [
+        mod.params.offsetX ?? 1.2,
+        mod.params.offsetY ?? 0,
+        mod.params.offsetZ ?? 0,
+      ]);
+    } else if (mod.type === "bevel") {
+      geo = applyBevelMesh(geo, mod.params.width ?? 0.08, mod.params.segments ?? 1);
+    }
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
 
 export function geometrySignature(obj: StudioObject): string {
   return JSON.stringify({
