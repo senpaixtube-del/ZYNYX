@@ -448,11 +448,47 @@ export function executePython(code: string, extras: { render?: () => void } = {}
     enumerate: (x: unknown) => (Array.isArray(x) ? x.map((v, i) => [i, v]) : []),
     math,
     pi: Math.PI,
+    sum: (xs: unknown) => (Array.isArray(xs) ? xs.reduce((a: number, b) => a + Number(b), 0) : 0),
+    any: (xs: unknown) => (Array.isArray(xs) ? xs.some(Boolean) : false),
+    all: (xs: unknown) => (Array.isArray(xs) ? xs.every(Boolean) : false),
+    zip: (...args: unknown[]) => {
+      const { pos } = pyKw(args);
+      const lists = pos.filter(Array.isArray) as unknown[][];
+      const n = Math.min(...lists.map((l) => l.length), 0) || Math.min(...lists.map((l) => l.length));
+      const out: unknown[][] = [];
+      const len = lists.length ? Math.min(...lists.map((l) => l.length)) : 0;
+      for (let i = 0; i < len; i++) out.push(lists.map((l) => l[i]));
+      return out;
+      void n;
+    },
+    sorted: (xs: unknown) => (Array.isArray(xs) ? [...xs].sort((a, b) => Number(a) - Number(b)) : []),
+    reversed: (xs: unknown) => (Array.isArray(xs) ? [...xs].reverse() : []),
+    list: (xs: unknown) => (Array.isArray(xs) ? [...xs] : xs == null ? [] : [xs]),
+    dict: (xs: unknown) => (xs && typeof xs === "object" ? { ...(xs as object) } : {}),
+    bool: (x: unknown) => !!x,
+    type: (x: unknown) => (x === null ? "NoneType" : Array.isArray(x) ? "list" : typeof x),
+    Exception: (msg: unknown) => String(msg ?? "Exception"),
+  };
+  let seed = 1;
+  const rnd = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  const random = {
+    random: rnd,
+    seed: (s: number) => {
+      seed = Math.max(1, Number(s) || 1);
+      return null;
+    },
+    randint: (a: number, b: number) => Math.floor(rnd() * (Number(b) - Number(a) + 1)) + Number(a),
+    uniform: (a: number, b: number) => Number(a) + rnd() * (Number(b) - Number(a)),
+    choice: (xs: unknown) => (Array.isArray(xs) && xs.length ? xs[Math.floor(rnd() * xs.length)] : null),
   };
   const modules = {
     bpy,
     math,
     mathutils: { Vector },
+    random,
   };
   try {
     useStudio.getState().log({ kind: "in", text: ">>> run" });

@@ -18,7 +18,7 @@ import {
   type Triple,
   uid,
 } from "./types";
-import { PRIMITIVE_DEFAULTS } from "./geometry";
+import { PRIMITIVE_DEFAULTS, evaluateGeometry } from "./geometry";
 
 export interface ConsoleLine {
   kind: "in" | "out" | "err" | "info";
@@ -56,6 +56,11 @@ export interface StudioState {
   consoleLines: ConsoleLine[];
   pythonCode: string;
   renderDataUrl: string | null;
+  renderWidth: number;
+  renderHeight: number;
+  renderSamples: number;
+  ssao: boolean;
+  viewCameraId: string | null;
   showWelcome: boolean;
   showKeys: boolean;
   hydrated: boolean;
@@ -80,6 +85,10 @@ export interface StudioState {
   setSculpt: (p: Partial<StudioState["sculpt"]>) => void;
   setPythonCode: (c: string) => void;
   setRenderDataUrl: (u: string | null) => void;
+  setRenderSize: (w: number, h: number) => void;
+  setRenderSamples: (n: number) => void;
+  setSsao: (v: boolean) => void;
+  setViewCamera: (id: string | null) => void;
   setShowWelcome: (v: boolean) => void;
   setShowKeys: (v: boolean) => void;
   setMobileTab: (t: StudioState["mobileTab"]) => void;
@@ -116,7 +125,10 @@ export interface StudioState {
   updateModifier: (id: string, modId: string, params: Record<string, number>, enabled?: boolean) => void;
   removeModifier: (id: string, modId: string) => void;
   insertKeyframe: (id?: string, frame?: number) => void;
+  deleteKeyframe: (id: string, frame: number) => void;
   insertTurntable: (id?: string) => void;
+  setFrameRange: (start: number, end: number) => void;
+  bakeObject: (id?: string) => void;
   replaceScene: (objects: StudioObject[], selectId?: string | null) => void;
   loadLookdev: () => void;
   loadEmpty: () => void;
@@ -336,6 +348,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   consoleLines: [{ kind: "info", text: "Lumina Python 3 — import bpy" }],
   pythonCode: DEFAULT_CODE,
   renderDataUrl: null,
+  renderWidth: 1920,
+  renderHeight: 1080,
+  renderSamples: 2,
+  ssao: true,
+  viewCameraId: null,
   showWelcome: true,
   showKeys: false,
   hydrated: false,
@@ -361,6 +378,10 @@ export const useStudio = create<StudioState>((set, get) => ({
   setSculpt: (p) => set({ sculpt: { ...get().sculpt, ...p } }),
   setPythonCode: (pythonCode) => set({ pythonCode }),
   setRenderDataUrl: (renderDataUrl) => set({ renderDataUrl }),
+  setRenderSize: (renderWidth, renderHeight) => set({ renderWidth, renderHeight }),
+  setRenderSamples: (renderSamples) => set({ renderSamples: Math.max(1, Math.min(8, Math.floor(renderSamples))) }),
+  setSsao: (ssao) => set({ ssao }),
+  setViewCamera: (viewCameraId) => set({ viewCameraId }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   setShowKeys: (showKeys) => set({ showKeys }),
   setMobileTab: (mobileTab) => set({ mobileTab }),
@@ -525,8 +546,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       mirror: { axis: 0 },
       array: { count: 3, offsetX: 1.25, offsetY: 0, offsetZ: 0 },
       solidify: { thickness: 0.06 },
-      bevel: { width: 0.08 },
-      displace: { amount: 0.12, scale: 2.4 },
+      bevel: { width: 0.08, segments: 1 },
+      displace: { amount: 0.12, scale: 2.4, texture: 1 },
     };
     const mod: Modifier = { id: uid("md"), type, enabled: true, params: defaults[type] };
     set({
@@ -572,6 +593,35 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
     keys.sort((a, b) => a.frame - b.frame);
     s.updateObject(fid, { keyframes: keys });
+  },
+  deleteKeyframe: (id, frame) => {
+    const obj = get().objects.find((o) => o.id === id);
+    if (!obj) return;
+    get().pushHistory();
+    get().updateObject(id, { keyframes: obj.keyframes.filter((k) => k.frame !== frame) });
+  },
+  setFrameRange: (start, end) => set({ frameStart: start, frameEnd: Math.max(start + 1, end) }),
+  bakeObject: (id) => {
+    const fid = id ?? get().activeId;
+    if (!fid) return;
+    const obj = get().objects.find((o) => o.id === fid);
+    if (!obj || obj.kind !== "mesh") return;
+    get().pushHistory();
+    const geo = evaluateGeometry(obj);
+    const pos = geo.getAttribute("position");
+    const nrm = geo.getAttribute("normal");
+    const uv = geo.getAttribute("uv");
+    get().updateObject(fid, {
+      primitive: "baked",
+      modifiers: [],
+      baked: {
+        position: Array.from(pos.array as Float32Array),
+        normal: nrm ? Array.from(nrm.array as Float32Array) : undefined,
+        index: geo.index ? (Array.from(geo.index.array as ArrayLike<number>) as number[]) : undefined,
+        uv: uv ? Array.from(uv.array as Float32Array) : undefined,
+      },
+    });
+    geo.dispose();
   },
   insertTurntable: (id) => {
     const s = get();
